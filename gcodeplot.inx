@@ -16,7 +16,9 @@
       <param name="min-y" type="float" min="-1000000" max="1000000" precision="1" _gui-text="Lower y-coordinate (mm):" _gui-description="y-coordinate of the print area's lower edge (Default: 0)">0</param>
       <param name="max-x" type="float" min="-1000000" max="1000000" precision="1" _gui-text="Right x-coordinate (mm):" _gui-description="x-coordinate of the print area's right edge (Default: 200)">200</param>
       <param name="max-y" type="float" min="-1000000" max="1000000" precision="1" _gui-text="Upper y-coordinate (mm):" _gui-description="y-coordinate of the print area's upper edge (Default: 200)">200</param>
-      <param name="work-z" type="float" min="-1000000" max="1000000" precision="2" _gui-text="Work z-coordinate (mm):" _gui-description="z-coordinate for drawing/cutting (Default: 15)">15</param>
+      <param name="work-z" type="float" min="-1000000" max="1000000" precision="2" _gui-text="Z left (mm):" _gui-description="z-coordinate for drawing/cutting (Default: 16.2)">16.2</param>
+      <param name="work-z-center" type="float" min="-1000000" max="1000000" precision="2" _gui-text="Z center (mm):" _gui-description="z-coordinate for drawing/cutting (Default: 15.9)">15.9</param>
+      <param name="work-z-right" type="float" min="-1000000" max="1000000" precision="2" _gui-text="Z right (mm):" _gui-description="z-coordinate for drawing/cutting (Default: 16.4)">16.4</param>
       <param name="lift-delta-z" type="float" min="-1000000" max="1000000" precision="2" _gui-text="Lift z-height (mm):" _gui-description="height to lift pen/knife for movement (Default: 4)">4</param>
       <param name="safe-delta-z" type="float" min="-1000000" max="1000000" precision="1" _gui-text="Parking z-height (mm):" _gui-description="height to lift pen/knife for safe parking (Default: 20)">20</param>
       <param name="pen-up-speed" type="float" min="-1000000" max="1000000" precision="1" _gui-text="Movement speed (mm/s):" _gui-description="Speed  moving with pen up (Default: 40)">40</param>
@@ -85,6 +87,8 @@
       <param name="boolean-sort" type="boolean" _gui-text="Inside-out sorting" _gui-description="Cut inside curves first">1</param>
       <param name="lift-command" type="string" _gui-text="Lift Command" _gui-description="Gcode command to lift the pen/blade"></param>
       <param name="down-command" type="string" _gui-text="Down Command" _gui-description="Gcode command to lower the pen/blade"></param>
+      <param name="compensate-y-pos" type="string" _gui-text="Compensation backlash Positive Y" _gui-description=""></param>
+      <param name="compensate-y-neg" type="string" _gui-text="Compensation backlash Negative Y" _gui-description=""></param>
     </page>
   </param>
   <output>

@@ -11,7 +11,6 @@ import cmath
 from random import sample
 from svgpath.shader import Shader
 from gcodeplotutils.processoffset import OffsetProcessor
-from gcodeplotutils.evaluate import evaluate
 
 SCALE_NONE = 0
 SCALE_DOWN_ONLY = 1
@@ -25,69 +24,49 @@ ALIGN_CENTER = 3
 
 class Plotter(object):
     def __init__(self, xyMin=(7,8), xyMax=(204,178),
-            drawSpeed=35, moveSpeed=40, zSpeed=5, workZ = 14.5, liftDeltaZ = 2.5, safeDeltaZ = 20,
-            liftCommand=None, safeLiftCommand=None, downCommand=None, comment=";",
-            initCode = "G00 S1; endstops|"
-                       "G00 E0; no extrusion|"
-                       "G01 S1; endstops|"
-                       "G01 E0; no extrusion|"
-                       "G21; millimeters|"
-                       "G91 G0 F%.1f{{zspeed*60}} Z%.3f{{safe}}; pen park !!Zsafe|"
-                       "G90; absolute|"
-                       "G28 X; home|"
-                       "G28 Y; home|"
-                       "G28 Z; home",
-            endCode=None):
+            drawSpeed=35, moveSpeed=40, zSpeed=5, workZ = 14.5, workZCenter=14.5, workZRight = 14.5, liftDeltaZ = 2.5, safeDeltaZ = 20,
+            liftCommand=None, safeLiftCommand=None, downCommand=None, comment=";"):
         self.xyMin = xyMin
         self.xyMax = xyMax
         self.drawSpeed = drawSpeed
         self.moveSpeed = moveSpeed
         self.workZ = workZ
+        self.workZCenter = workZCenter
+        self.workZRight = workZRight
         self.liftDeltaZ = liftDeltaZ
         self.safeDeltaZ = safeDeltaZ
         self.zSpeed = zSpeed
         self.liftCommand = liftCommand
         self.safeLiftCommand = safeLiftCommand
         self.downCommand = downCommand
-        self.initCode = initCode
-        self.endCode = endCode
-        self.comment = comment
 
     def inRange(self, point):
         for i in range(2):
-            if point[i] < self.xyMin[i]-.001 or point[i] > self.xyMax[i]+.001:
+            if point[i] < self.xyMin[i] or point[i] > self.xyMax[i]:
                 return False
         return True
 
     @property
     def safeUpZ(self):
-        return self.workZ + self.safeDeltaZ
+        return self.safeDeltaZ
 
     @property
     def penUpZ(self):
         return self.workZ + self.liftDeltaZ
-        
-    def updateVariables(self):
-        self.variables = {'lift':self.liftDeltaZ, 'work':self.workZ, 'safe':self.safeDeltaZ, 'left':self.xyMin[0],
-            'bottom':self.xyMin[1], 'zspeed':self.zSpeed, 'movespeed':self.moveSpeed}
-        self.formulas = {'right':str(self.xyMax[0]), 'top':str(self.xyMax[1]), 'up':'work+lift', 'park':'work+safe', 'centerx':'(left+right)/2.', 'centery':'(top+bottom)/2.'}
 
-def processCode(code):
-    if not code:
-        return []
-
-    data = []
-    pattern = r'\{\{([^}]+)\}\}'
-    
-    data = tuple( evaluate(expr, plotter.variables, plotter.formulas) for expr in re.findall(pattern, code))
-
-        
-    formatString = re.sub(pattern, '', code.replace('|', '\n'))
-    
-    return [formatString % data]
-        
 def gcodeHeader(plotter):
-    return processCode(plotter.initCode)
+    gcode = []
+    #gcode.append('G00 S1; endstops')
+    #gcode.append('G00 E0; no extrusion')
+    #gcode.append('G01 S1; endstops')
+    #gcode.append('G01 E0; no extrusion')
+    gcode.append('G21; millimeters')
+    # gcode.append('G91 G0 F%.1f Z%.3f; pen park !!Zsafe' % (plotter.zSpeed*60., plotter.safeDeltaZ))
+    gcode.append('G90; absolute')
+    # gcode.append('G28 X0; home')
+    # gcode.append('G28 Y0; home')
+    # gcode.append('G28 Z0; home')
+    return gcode
 
 def isSameColor(rgb1, rgb2):
     if rgb1 is None or rgb2 is None:
@@ -139,7 +118,7 @@ class Scale(object):
             elif align[i] == ALIGN_RIGHT:
                 o[i] = plotter.xyMax[i] - self.scale[i]*xyMax[i]
             elif align[i] == ALIGN_NONE:
-                o[i] = self.offset[i] # self.xyMin[i]
+                o[i] = self.offset[i] # plotter.xyMin[i]
             elif align[i] == ALIGN_CENTER:
                 o[i] = 0.5 * (plotter.xyMin[i] - self.scale[i]*xyMin[i] + plotter.xyMax[i] - self.scale[i]*xyMax[i])
             else:
@@ -149,112 +128,164 @@ class Scale(object):
     def scalePoint(self, point):
         return (point[0]*self.scale[0]+self.offset[0], point[1]*self.scale[1]+self.offset[1])
 
-def comparison(a,b):
+def compareScalar(a,b):
     return 1 if a>b else (-1 if a<b else 0)
 
-def safeSorted(data,comparison=comparison):
-    """
-    A simpleminded recursive merge sort that will work even if the comparison function fails to be a partial order.
-    Makes (shallow) copies of the data, which uses more memory than is absolutely necessary. In the intended application,
-    the comparison function is very expensive but the number of data points is small.
-    """
-    n = len(data)
-    if n <= 1:
-        return list(data)
-    d1 = safeSorted(data[:n//2],comparison=comparison)
-    d2 = safeSorted(data[n//2:],comparison=comparison)
-    i1 = 0
-    i2 = 0
-    out = []
-    while i1 < len(d1) and i2 < len(d2):
-        if comparison(d1[i1], d2[i2]) < 0:
-            out.append(d1[i1])
-            i1 += 1
+def sortNotOverlap(data, indexes, comparison):
+    result = list(indexes)
+    for i in range(len(indexes) - 1):
+        for j in range(i + 1, len(indexes)):
+            compareResult = comparison(data[result[i]], data[result[j]])
+            if compareResult == 1:
+                result[i], result[j] = result[j], result[i]
+    return result
+
+def safeSorted(data, info, comparison):
+    paths = []
+    for path in data:
+        paths += [fixPath(path)]
+    for i in range(len(paths) - 1):
+        path1 = paths[i]
+        for j in range(i+1, len(paths)):
+            path2 = paths[j]
+            nestedInfo = nestedPaths(path1, path2)
+            if nestedInfo == -1:
+                info[i] = 1
+                paths[i + 1], paths[j] = paths[j], paths[i + 1]
+                data[i + 1], data[j] = data[j], data[i + 1]
+            elif nestedInfo == 1:
+                info[i] = 1
+                paths[i], paths[j] = paths[j], paths[i]
+                data[i], data[j] = data[j], data[i]
+                paths[i + 1], paths[j] = paths[j], paths[i + 1]
+                data[i + 1], data[j] = data[j], data[i + 1]
+
+    l = -1
+    ll = -1
+    for i in range(len(info)):
+        if info[i] == 0:
+            if ll-l > 1:
+                sortedIndexes = sortNotOverlap(data, range(l, ll), comparison)
+                data[l:ll] = [data[j] for j in sortedIndexes]
+            l = -1
+            ll = -1
         else:
-            out.append(d2[i2])
-            i2 += 1
-    if i1 < len(d1):
-        out += d1[i1:]
-    elif i2 < len(d2):
-        out += d2[i2:]
+            if l == -1:
+                l = i
+                ll = l + 1
+            else:
+                ll += 1
+    if ll-l > 1:
+        sortedIndexes = sortNotOverlap(data, range(l, ll), comparison)
+        data[l:ll] = [data[j] for j in sortedIndexes]
+
+    l = []
+    # print(info)
+    for i in range(len(info)):
+        if info[i] == 0:
+            l += [i]
+    sortedIndexes = sortNotOverlap(data, l, comparison)
+    # print(l)
+    # print(sortedIndexes)
+    newIndexes = []
+    for i in sortedIndexes:
+        j = 1
+        l = []
+        while(i - j >= 0 and info[i - j] == 1):
+            l = [i - j] + l
+            j += 1
+        newIndexes += [i] + l
+    # print(newIndexes)
+    data[:] = [data[j] for j in newIndexes]
+    # print(" ")
+    # exit(1)
+
+
+def fixPath(path):
+    out = [complex(point[0],point[1]) for point in path]
+    if out[0] != out[-1] and abs(out[0]-out[-1]) <= tolerance:
+        out.append(out[0])
     return out
 
-def comparePaths(path1,path2,tolerance=0.05,pointsToCheck=3):
+def closed(path):
+    return path[-1] == path[0]
+
+def inside(z, path):
+    for p in path:
+        if p == z:
+            return False
+    try:
+        phases = sorted((cmath.phase(p-z) for p in path))
+        # make a ray that is relatively far away from any points
+        if len(phases) == 1:
+            # should not happen
+            bestPhase = phases[0] + math.pi
+        else:
+            bestIndex = max( (phases[i+1]-phases[i],i) for i in range(len(phases)-1))[1]
+            bestPhase = (phases[bestIndex+1]+phases[bestIndex])/2.
+        ray = cmath.rect(1., bestPhase)
+        rotatedPath = tuple((p-z) / ray for p in path)
+        # now we just need to check shiftedPath's intersection with the positive real line
+        s = 0
+        for i,p2 in enumerate(rotatedPath):
+            p1 = rotatedPath[i-1]
+            if p1.imag == p2.imag:
+                # horizontal lines can't intersect positive real line once phase selection was done
+                continue
+                # (1/m)y + xIntercept = x
+            reciprocalSlope = (p2.real-p1.real)/(p2.imag-p1.imag)
+            xIntercept = p2.real - reciprocalSlope * p2.imag
+            if xIntercept == 0:
+                return False # on boundary
+            if p1.imag * p2.imag < 0 and xIntercept > 0:
+                if p1.imag < 0:
+                    s += 1
+                else:
+                    s -= 1
+        return s != 0
+
+    except OverflowError:
+        return False
+
+def nestedPaths(path1, path2):
+    minx1 = min(p.real for p in path1)
+    maxx1 = max(p.real for p in path1)
+    miny1 = min(p.imag for p in path1)
+    maxy1 = max(p.imag for p in path1)
+    minx2 = min(p.real for p in path2)
+    maxx2 = max(p.real for p in path2)
+    miny2 = min(p.imag for p in path2)
+    maxy2 = max(p.imag for p in path2)
+    delta = 5
+    in1 = minx1 > minx2 - delta and maxx1 < maxx2 + delta and miny1 > miny2 - delta and maxy1 < maxy2 + delta
+    in2 = minx1 - delta <= minx2 and maxx1 + delta >= maxx2 and miny1 - delta <= miny2 and maxy1 + delta >= maxy2
+    if in1:
+        return -1
+    if in2:
+        return 1
+    return 0
+
+def comparePaths(path1, path2, tolerance=0.05):
     """
     inner paths come before outer ones
     closed paths come before open ones
     otherwise, average left to right movement
     """
 
-    def fixPath(path):
-        out = [complex(point[0],point[1]) for point in path]
-        if out[0] != out[-1] and abs(out[0]-out[-1]) <= tolerance:
-            out.append(out[0])
-        return out
-
-    def closed(path):
-        return path[-1] == path[0]
-
-    def inside(z, path):
-        for p in path:
-            if p == z:
-                return False
-        try:
-            phases = sorted((cmath.phase(p-z) for p in path))
-            # make a ray that is relatively far away from any points
-            if len(phases) == 1:
-                # should not happen
-                bestPhase = phases[0] + math.pi
-            else:
-                bestIndex = max( (phases[i+1]-phases[i],i) for i in range(len(phases)-1))[1]
-                bestPhase = (phases[bestIndex+1]+phases[bestIndex])/2.
-            ray = cmath.rect(1., bestPhase)
-            rotatedPath = tuple((p-z) / ray for p in path)
-            # now we just need to check shiftedPath's intersection with the positive real line
-            s = 0
-            for i,p2 in enumerate(rotatedPath):
-                p1 = rotatedPath[i-1]
-                if p1.imag == p2.imag:
-                    # horizontal lines can't intersect positive real line once phase selection was done
-                    continue
-                    # (1/m)y + xIntercept = x
-                reciprocalSlope = (p2.real-p1.real)/(p2.imag-p1.imag)
-                xIntercept = p2.real - reciprocalSlope * p2.imag
-                if xIntercept == 0:
-                    return False # on boundary
-                if p1.imag * p2.imag < 0 and xIntercept > 0:
-                    if p1.imag < 0:
-                        s += 1
-                    else:
-                        s -= 1
-            return s != 0
-
-        except OverflowError:
-            return False
-
-    def nestedPaths(path1, path2):
-        if not closed(path2):
-            return False
-        k = min(pointsToCheck, len(path1))
-        for point in sample(path1, k):
-            if inside(point, path2):
-                return True
-        return False
-
     path1 = fixPath(path1)
     path2 = fixPath(path2)
 
-    if nestedPaths(path1, path2):
-        return -1
-    elif nestedPaths(path2, path1):
-        return 1
-    elif closed(path1) and not closed(path2):
-        return -1
-    elif closed(path2) and not closed(path1):
-        return 1
-    x1 = sum(p.real for p in path1) / len(path1)
-    x2 = sum(p.real for p in path2) / len(path2)
-    return comparison(x1,x2)
+    y1 = min(p.imag for p in path1)
+    y2 = min(p.imag for p in path2)
+    if abs(y1 - y2) < 1:
+        result = 0
+    else:
+        result = compareScalar(y1,y2)
+    if result == 0:
+        x1 = min(p.real for p in path1)
+        x2 = min(p.real for p in path2)
+        result = compareScalar(x1,x2)
+    return result
 
 def removePenBob(data):
     """
@@ -369,20 +400,15 @@ def emitGcode(data, pens = {}, plotter=Plotter(), scalingMode=SCALE_NONE, align 
         gcode.append('<?xml version="1.0" standalone="yes"?>')
         gcode.append('<svg width="%.4fmm" height="%.4fmm" viewBox="%.4f %.4f %.4f %.4f" xmlns="http://www.w3.org/2000/svg" version="1.1">' % (
             plotter.xyMax[0]-plotter.xyMin[0], plotter.xyMax[1]-plotter.xyMin[0], plotter.xyMin[0], plotter.xyMin[1], plotter.xyMax[0], plotter.xyMax[1]))
-            
-            
+
     def park():
         if not simulation:
-            lift = plotter.safeLiftCommand or plotter.liftCommand
-            if lift:
-                gcode.extend(processCode(lift))
-            else:
-                gcode.append('G00 F%.1f Z%.3f; pen park !!Zpark' % (plotter.zSpeed*60., plotter.safeUpZ))
+            gcode.append('M5 S1;')
+            gcode.append('G0 F%.1f Z%.3f; pen park !!Zsafe' % (plotter.zSpeed*60., plotter.safeUpZ))
 
     park()
-    if not simulation:
-        gcode.append('G00 F%.1f Y%.3f; !!Ybottom' % (plotter.moveSpeed*60.,   plotter.xyMin[1]))
-        gcode.append('G00 F%.1f X%.3f; !!Xleft' % (plotter.moveSpeed*60.,   plotter.xyMin[0]))
+    # if not simulation:
+    #     gcode.append('G00 F%.1f X%.3f Y%.3f; !!Xleft' % (plotter.moveSpeed*60.,   plotter.xyMin[0],   plotter.xyMin[1]))
 
     class State(object):
         pass
@@ -392,15 +418,18 @@ def emitGcode(data, pens = {}, plotter=Plotter(), scalingMode=SCALE_NONE, align 
     state.curXY = plotter.xyMin
     state.curZ = plotter.safeUpZ
     state.penColor = (0.,0.,0.)
+    state.previousYDiff = 0 # previous Y direction/diff
+    state.previousY = 0 # previous Y coordinate
 
     def distance(a,b):
         return math.hypot(a[0]-b[0],a[1]-b[1])
 
     def penUp(force=False):
-        if state.curZ is None or state.curZ not in (plotter.safeUpZ, plotter.penUpZ) or force:
+        if state.curZ is None or state.curZ != plotter.penUpZ or force:
             if not simulation:
-                if plotter.liftCommand:
-                    gcode.extend(processCode(plotter.liftCommand))
+                if plotter.liftCommand and plotter.liftCommand is not None:
+                    gcode.append(plotter.liftCommand)
+                    gcode.append('G00 F%.1f Z%.3f; pen up !!Zup' % (plotter.zSpeed*60., plotter.penUpZ))
                 else:
                     gcode.append('G00 F%.1f Z%.3f; pen up !!Zup' % (plotter.zSpeed*60., plotter.penUpZ))
             if state.curZ is not None:
@@ -410,10 +439,13 @@ def emitGcode(data, pens = {}, plotter=Plotter(), scalingMode=SCALE_NONE, align 
     def penDown(force=False):
         if state.curZ is None or state.curZ != plotter.workZ or force:
             if not simulation:
-                if plotter.downCommand:
-                    gcode.extend(processCode(plotter.downCommand))
-                else:
-                    gcode.append('G00 F%.1f Z%.3f; pen down !!Zwork' % (plotter.zSpeed*60., plotter.workZ))
+                if plotter.downCommand and plotter.downCommand is not None:
+                    gcode.append(plotter.downCommand)
+                c = plotter.workZ
+                a = (plotter.workZRight - 2*plotter.workZCenter + plotter.workZ)*2/(plotter.xyMax[0]*plotter.xyMax[0]);
+                b = (plotter.workZRight - c - plotter.xyMax[0]*plotter.xyMax[0]*a)/plotter.xyMax[0]
+                z = state.curXY[0]*state.curXY[0]*a + state.curXY[0]*b + c
+                gcode.append('G00 F%.1f Z%.3f; pen down !!Zwork' % (plotter.zSpeed*60., z))
             state.time += abs(state.curZ-plotter.workZ) / plotter.zSpeed
             state.curZ = plotter.workZ
 
@@ -424,15 +456,28 @@ def emitGcode(data, pens = {}, plotter=Plotter(), scalingMode=SCALE_NONE, align 
             d = float("inf")
         else:
             d = distance(state.curXY, p)
+
+
         if d > tolerance or force:
             if down:
                 penDown(force=force)
             else:
                 penUp(force=force)
             if not simulation:
-                gcode.append('G0%d F%.1f X%.3f Y%.3f; %s !!Xleft+%.3f Ybottom+%.3f' % (
+                diff = 1 if p[1] > state.previousY else (-1 if p[1] < state.previousY else 0)
+                if diff != state.previousYDiff and state.previousYDiff != 0:  # backlash compensate
+                    if diff == 1 and plotter.compensateYPos != 0:  # positive direction
+                        gcode.append('G1 F%.1f Y%.3f; compensate Y positive direction' % (speed*60., state.previousY + plotter.compensateYPos))
+                        gcode.append('G92 Y%.3f; set back the previous Y coordinate' % state.previousY)
+                    if diff == -1 and plotter.compensateYNeg != 0:
+                        gcode.append('G1 F%.1f Y%.3f; compensate Y negative direction' % (speed * 60., state.previousY - plotter.compensateYNeg))
+                        gcode.append('G92 Y%.3f; set back the previous Y coordinate' % state.previousY)
+                state.previousY = p[1]
+                if diff != 0:
+                    state.previousYDiff = diff
+                gcode.append('G0%d F%.1f X%.3f Y%.3f; %s !!Xleft+%.3f Ybottom+%.3f %d %d' % (
                     1 if down else 0, speed*60., p[0], p[1], "draw" if down else "move",
-                    p[0]-plotter.xyMin[0], p[1]-plotter.xyMin[1]))
+                    p[0]-plotter.xyMin[0], p[1]-plotter.xyMin[1], diff, state.previousYDiff))
             else:
                 start = state.curXY if state.curXY is not None else plotter.xyMin
                 color = [int(math.floor(255*x+0.5)) for x in (state.penColor if down else (0,0.5,0))]
@@ -476,14 +521,16 @@ def emitGcode(data, pens = {}, plotter=Plotter(), scalingMode=SCALE_NONE, align 
 
             for i in range(1,len(segment)):
                 penMove(True, plotter.drawSpeed, s.scalePoint(segment[i]))
-
+    if plotter.liftCommand is not None:
+        gcode.append(plotter.liftCommand)
+    gcode.append('G00 F%.1f Z%.3f; pen up !!Zup' % (plotter.zSpeed*60., plotter.penUpZ))
     park()
 
     if simulation:
         gcode.append('</svg>')
     else:
-        gcode.extend(processCode(plotter.endCode))
-
+        gcode.append('G00 F%.1f X%.3f Y%.3f; !!Xleft' % (plotter.moveSpeed*60.,   plotter.xyMin[0],   xyMax[1]))
+    #gcode.append(' '.join(sys.argv[1:]))
     if not quiet:
         sys.stderr.write('Estimated printing time: %dm %.1fs\n' % (state.time // 60, state.time % 60))
         sys.stderr.flush()
@@ -596,7 +643,7 @@ def parseSVG(svgTree, tolerance=0.05, shader=None, strokeAll=False, pens=None, e
             del data[strokePen]
 
         if shader is not None and shader.isActive() and path.svgState.fill is not None and (extractColor is None or
-                isSameColor(path.svgState.fill, extractColor)):
+                isSameColor(path.svgStatefill, extractColor)):
             pen = getPen(pens, path.svgState.fill)
 
             if pen not in data:
@@ -675,19 +722,15 @@ def fixComments(plotter, data, comment = ";"):
     if comment == ";":
         return data
     out = []
-    for command in data:
-        for line in command.split('\n'):
-            try:
-                ind = line.index(";")
-                if ind >= 0:
-                    if not comment:
-                        out.append( line[:ind].strip() )
-                    else:
-                        out.append( line[:ind] + comment[0] + line[ind+1:] + comment[1:] )
-                else:
-                    out.append(line)
-            except ValueError:
-                out.append(line)
+    for line in data:
+        ind = line.index(";")
+        if ind >= 0:
+            if not plotter.comment:
+                out.append( ind[:ind].strip() )
+            else:
+                out.append( ind[:ind] + comment[0] + ind[ind+1:] + comment[1:] )
+        else:
+            out.append(data)
     return out
 
 if __name__ == '__main__':
@@ -712,6 +755,10 @@ if __name__ == '__main__':
  -a|--area=x1,y1,x2,y2: gcode print area in millimeters
  -Z|--lift-delta-z=z: amount to lift for pen-up (millimeters)
  -z|--work-z=z: z-position for drawing (millimeters)
+ -y|--work-z-center=z: z-position for drawing on center (millimeters)
+ -y|--work-z-right=z: z-position for drawing on right (millimeters)
+ --compensate-y-pos=z: compensate Y positive (millimeters)
+ --compensate-y-neg=z: compensate Y negative (millimeters)
  -F|--pen-up-speed=z: speed for moving with pen up (millimeters/second)
  -f|--pen-down-speed=z: speed for moving with pen down (millimeters/second)
  -u|--z-speed=s: speed for up/down movement (millimeters/second)
@@ -734,9 +781,8 @@ if __name__ == '__main__':
     --comment-delimiters=xy: one or two characters specifying comment delimiters, e.g., ";" or "()"
     --tool-offset=x: cutting tool offset (millimeters) [default 0.0]
     --overcut=x: overcut (millimeters) [default 0.0]
-    --lift-command=gcode: gcode lift command (separate lines with |)
-    --down-command=gcode: gcode down command (separate lines with |)
-    --init-code=gcode: gcode init commands (separate lines with |)
+    --lift-command=gcode: gcode lift command
+    --down-command=gcode: gcode down command
 
  The options with an asterisk are default off and can be turned off again by adding "no-" at the beginning to the long-form option, e.g., --no-stroke-all or --no-send.
 """)
@@ -771,21 +817,17 @@ if __name__ == '__main__':
     comment = ";"
     sendAndSave = False
     directionAngle = None
-    
-    def maybeNone(a):
-        return None if a=='none' else a
 
     try:
-        opts, args = getopt.getopt(sys.argv[1:], "e:UR:Uhdulw:P:o:Oc:LT:M:m:A:XHrf:na:D:t:s:S:x:y:z:Z:p:f:F:",
+        opts, args = getopt.getopt(sys.argv[1:], "e:UR:Uhdulw:P:o:Oc:LT:M:m:A:XHrf:na:D:t:s:S:x:y:z:y:Z:p:f:F:",
                         ["help", "down", "up", "lower-left", "allow-repeats", "no-allow-repeats", "scale=", "config-file=",
                         "area=", 'align-x=', 'align-y=', 'optimization-time=', "pens=",
-                        'input-dpi=', 'tolerance=', 'send=', 'send-speed=', 'work-z=', 'lift-delta-z=', 'safe-delta-z=',
+                        'input-dpi=', 'tolerance=', 'send=', 'send-speed=', 'work-z=', 'work-z-center=', 'work-z-right=', 'compensate-y-pos=', 'compensate-y-neg=', 'lift-delta-z=', 'safe-delta-z=',
                         'pen-down-speed=', 'pen-up-speed=', 'z-speed=', 'hpgl-out', 'no-hpgl-out', 'shading-threshold=',
                         'shading-angle=', 'shading-crosshatch', 'no-shading-crosshatch', 'shading-avoid-outline',
                         'pause-at-start', 'no-pause-at-start', 'min-x=', 'max-x=', 'min-y=', 'max-y=',
                         'no-shading-avoid-outline', 'shading-darkest=', 'shading-lightest=', 'stroke-all', 'no-stroke-all', 'gcode-pause', 'dump-options', 'tab=', 'extract-color=', 'sort', 'no-sort', 'simulation', 'no-simulation', 'tool-offset=', 'overcut=',
-                        'boolean-shading-crosshatch=', 'boolean-sort=', 'tool-mode=', 'send-and-save=', 'direction=', 'lift-command=', 'down-command=',
-                        'init-code=', 'comment-delimiters=', 'end-code=' ], )
+                        'boolean-shading-crosshatch=', 'boolean-sort=', 'tool-mode=', 'send-and-save=', 'direction=', 'lift-command=', 'down-command=' ], )
 
         if len(args) + len(opts) == 0:
             raise getopt.GetoptError("invalid commandline")
@@ -873,6 +915,14 @@ if __name__ == '__main__':
                 plotter.liftDeltaZ = float(arg)
             elif opt in ('-z', '--work-z'):
                 plotter.workZ = float(arg)
+            elif opt in ('-z', '--work-z-center'):
+                plotter.workZCenter = float(arg)
+            elif opt in ('-y', '--work-z-right'):
+                plotter.workZRight = float(arg)
+            elif opt in ('--compensate-y-pos'):
+                plotter.compensateYPos = float(arg)
+            elif opt in ('--compensate-y-neg'):
+                plotter.compensateYNeg = float(arg)
             elif opt == '--tool-offset':
                 toolOffset = float(arg)
             elif opt == '--overcut':
@@ -956,15 +1006,9 @@ if __name__ == '__main__':
                 else:
                     directionAngle = float(arg)
             elif opt == '--lift-command':
-                plotter.liftCommand = maybeNone(arg)
+                plotter.liftCommand = arg
             elif opt == '--down-command':
-                plotter.downCommand = maybeNone(arg)
-            elif opt == '--init-code':
-                plotter.initCode = maybeNone(arg)
-            elif opt == '--end-code':
-                plotter.endCode = maybeNone(arg)
-            elif opt == '--comment-delimiters':
-                plotter.comment = maybeNone(arg)
+                plotter.downCommand = arg
             else:
                 raise ValueError("Unrecognized argument "+opt)
             i += 1
@@ -1020,9 +1064,10 @@ if __name__ == '__main__':
         print('safe-delta-z=%g' % (plotter.safeDeltaZ))
         print('lift-delta-z=%g' % (plotter.liftDeltaZ))
         print('work-z=%g' % (plotter.workZ))
-        print('pen-down-speed=%g' % (plotter.drawSpeed))
-        print('pen-up-speed=%g' % (plotter.moveSpeed))
-        print('z-speed=%g' % (plotter.zSpeed))
+        print('work-z-center=%g' % (plotter.workZCenter))
+        print('work-z-right=%g' % (plotter.workZRight))
+        print('compensate-y-pos=%g' % (plotter.compensateYPos))
+        print('compensate-y-neg=%g' % (plotter.compensateYNeg))
         print('hpgl-out' if hpglOut else 'no-hpgl-out')
         print('shading-threshold=%g' % (shader.unshadedThreshold))
         print('shading-lightest=%g' % (shader.lightestSpacing))
@@ -1038,11 +1083,9 @@ if __name__ == '__main__':
         print('overcut=%.3f' % overcut)
         print('simulation' if svgSimulation else 'no-simulation')
         print('direction=' + ('none' if directionAngle is None else '%.3f'%directionAngle))
+        print('comment=' + comment)
         print('lift-command=' + ('none' if plotter.liftCommand is None else plotter.liftCommand))
         print('down-command=' + ('none' if plotter.downCommand is None else plotter.downCommand))
-        print('init-code=' + ('none' if plotter.initCode is None else plotter.initCode))
-        print('end-code=' + ('none' if plotter.endCode is None else plotter.endCode))
-        print('comment-delimiters=' + ('none' if plotter.comment is None else plotter.comment))
 
         sys.exit(0)
 
@@ -1054,8 +1097,10 @@ if __name__ == '__main__':
     elif toolMode == 'draw':
         toolOffset = 0.
         sortPaths = False
-        
-    plotter.updateVariables()
+
+    variables = {'lift':plotter.liftDeltaZ, 'work':plotter.workZ, 'safe':plotter.safeDeltaZ, 'left':plotter.xyMin[0],
+        'bottom':plotter.xyMin[1]}
+    formulas = {'right':str(plotter.xyMax[0]), 'top':str(plotter.xyMax[1]), 'up':'work+lift', 'park':'safe', 'centerx':'(left+right)/2.', 'centery':'(top+bottom)/2.'}
 
     if len(args) == 0:
         if not pauseAtStart:
@@ -1066,7 +1111,7 @@ if __name__ == '__main__':
             sys.exit(1)
         import gcodeplotutils.sendgcode as sendgcode
 
-        sendgcode.sendGcode(port=sendPort, speed=sendSpeed, commands=gcodeHeader(plotter) + [gcodePause], gcodePause=gcodePause, variables=plotter.variables, formulas=plotter.formulas)
+        sendgcode.sendGcode(port=sendPort, speed=sendSpeed, commands=gcodeHeader(plotter) + [gcodePause], gcodePause=gcodePause, variables=variables, formulas=formulas)
         sys.exit(0)
 
     with open(args[0]) as f:
@@ -1095,17 +1140,20 @@ if __name__ == '__main__':
     if doDedup:
         penData = dedup(penData)
 
-    if sortPaths:
-        for pen in penData:
-            penData[pen] = safeSorted(penData[pen], comparison=comparePaths)
-        penData = removePenBob(penData)
+
 
     if optimizationTime > 0. and directionAngle is None:
         for pen in penData:
             penData[pen] = anneal.optimize(penData[pen], timeout=optimizationTime/2., quiet=quiet)
         penData = removePenBob(penData)
 
-    if toolOffset > 0. or overcut > 0.:
+    if sortPaths:
+        for pen in penData:
+            info = [0 for d in penData[pen]]
+            safeSorted(penData[pen], info, comparison=comparePaths)
+        penData = removePenBob(penData)
+
+    if toolOffset > 0.:
         if scalingMode != SCALE_NONE:
             sys.stderr.write("Scaling with tool-offset > 0 will produce unpredictable results.\n")
         op = OffsetProcessor(toolOffset=toolOffset, overcut=overcut, tolerance=tolerance)
@@ -1139,13 +1187,13 @@ if __name__ == '__main__':
             if hpglOut:
                 sendgcode.sendHPGL(port=sendPort, speed=sendSpeed, commands=g)
             else:
-                sendgcode.sendGcode(port=sendPort, speed=sendSpeed, commands=g, gcodePause=gcodePause, plotter=plotter, variables=plotter.variables, formulas=plotter.formulas)
+                sendgcode.sendGcode(port=sendPort, speed=sendSpeed, commands=g, gcodePause=gcodePause, plotter=plotter, variables=variables, formulas=formulas)
 
         if dump:
             if hpglOut:
                 sys.stdout.write(g)
             else:
-                print('\n'.join(fixComments(plotter, g, comment=plotter.comment)))
+                print('\n'.join(fixComments(plotter, g, comment=comment)))
 
     else:
         sys.stderr.write("No points.")
